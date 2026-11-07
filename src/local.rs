@@ -792,13 +792,22 @@ pub fn write_with(
             detail: "ChatGPT is a live read-only source; sessions can be pulled out and converted into another harness, but never continued into ChatGPT"
                 .to_string(),
         }),
-        HarnessId::Codex => go(
-            codex::CodexStore::default_root(),
-            codex::CodexStore::new,
-            root,
-            common,
-            |s| s.sessions_dir,
-        ),
+        HarnessId::Codex => {
+            // A copy in the live store must name the user's configured
+            // provider, or Codex 0.166+ refuses to resume it. `--out` keeps
+            // the default.
+            let provider = root
+                .is_none()
+                .then(|| codex::CodexStore::default_root()?.configured_model_provider())
+                .flatten();
+            go(
+                codex::CodexStore::default_root(),
+                |dir| codex::CodexStore::new(dir).with_model_provider(provider),
+                root,
+                common,
+                |s| s.sessions_dir,
+            )
+        }
         HarnessId::Pi => go(
             pi::PiStore::default_root(),
             pi::PiStore::new,

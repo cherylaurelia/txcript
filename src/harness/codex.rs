@@ -518,8 +518,8 @@ fn messages_to_lines(meta: &Meta, messages: &[Message]) -> Vec<Line> {
     // or resume silently falls through to a fresh session. base_instructions
     // may be null (codex substitutes its defaults), but model_provider must
     // name a real provider: current codex resolves null to the empty provider
-    // name and fails resume with "Model provider `` not found". Native
-    // rollouts always carry "openai".
+    // name and fails resume with "Model provider `` not found". "openai" is
+    // Codex's default; a store with `model_provider` set writes that instead.
     let mut payload = json!({
         "id": meta.id,
         "timestamp": meta.timestamp.to_rfc3339_opts(SecondsFormat::Millis, true),
@@ -919,6 +919,10 @@ pub struct CodexStore {
     /// flat sibling directory, `archived_sessions`. `None` when unknown, as
     /// for a `sessions_dir` built by hand that isn't under a Codex home.
     pub archived_sessions_dir: Option<PathBuf>,
+    /// Written into each saved rollout's `session_meta.model_provider` when
+    /// set. Codex 0.166 and later refuse to resume a rollout recorded under a
+    /// provider other than the one they run with.
+    pub model_provider: Option<String>,
 }
 
 impl CodexStore {
@@ -926,6 +930,7 @@ impl CodexStore {
         Self {
             sessions_dir: sessions_dir.into(),
             archived_sessions_dir: None,
+            model_provider: None,
         }
     }
 
@@ -952,6 +957,39 @@ impl CodexStore {
                     .with_archived_sessions_dir(codex_home.join("archived_sessions"))
             })
     }
+
+    /// Save rollouts under `provider` instead of the one they carry.
+    #[must_use]
+    pub fn with_model_provider(mut self, provider: Option<String>) -> Self {
+        self.model_provider = provider;
+        self
+    }
+
+    /// The top-level `model_provider` in the `config.toml` beside
+    /// `sessions_dir`. `None` when there is no config or it sets none, where
+    /// Codex uses `openai`. Only `model_provider = "…"` lines before the
+    /// first table are read: a `profile`'s provider and command-line
+    /// overrides (`--profile`, `-c`, `--oss`) are not seen.
+    #[must_use]
+    pub fn configured_model_provider(&self) -> Option<String> {
+        let config = fs::read_to_string(self.sessions_dir.parent()?.join("config.toml")).ok()?;
+        top_level_model_provider(&config)
+    }
+}
+
+fn top_level_model_provider(config: &str) -> Option<String> {
+    config
+        .lines()
+        .map(str::trim)
+        .take_while(|line| !line.starts_with('['))
+        .filter_map(|line| line.split_once('='))
+        .find(|(key, _)| key.trim() == "model_provider")
+        .and_then(|(_, value)| {
+            let value = value.trim();
+            let quote = value.chars().next().filter(|c| matches!(c, '"' | '\''))?;
+            let rest = &value[1..];
+            rest.find(quote).map(|end| rest[..end].to_string())
+        })
 }
 
 impl Store for CodexStore {
@@ -1031,7 +1069,19 @@ impl Store for CodexStore {
         fs::create_dir_all(&dir)?;
         let compact = t.format("%Y-%m-%dT%H-%M-%S").to_string();
         let path = dir.join(format!("rollout-{compact}-{id}.jsonl"));
-        fs::write(&path, Codex::to_text(transcript)?)?;
+        let text = match &self.model_provider {
+            None => Codex::to_text(transcript)?,
+            Some(provider) => {
+                let mut body = transcript.body.clone();
+                for line in body.iter_mut().filter(|line| line.kind == "session_meta") {
+                    if let Value::Object(payload) = &mut line.payload {
+                        payload.insert("model_provider".into(), Value::String(provider.clone()));
+                    }
+                }
+                jsonl::render(&body)?
+            }
+        };
+        fs::write(&path, text)?;
         Ok(Saved {
             id,
             reference: path,
@@ -1829,5 +1879,30 @@ mod lineage_tests {
         });
         let lineage = lineage_from_session_meta(&payload).expect("spawn lineage");
         assert_eq!(lineage.relation, Relation::Spawn);
+    }
+}
+
+#[cfg(test)]
+mod model_provider_tests {
+    use super::top_level_model_provider;
+
+    #[test]
+    fn reads_the_top_level_model_provider() {
+        let cases: &[(&str, Option<&str>)] = &[
+            ("", None),
+            ("model = \"gpt-5\"\n", None),
+            ("model_provider = \"ollama\"\n", Some("ollama")),
+            ("model_provider='azure' # work\n", Some("azure")),
+            ("# model_provider = \"commented\"\n", None),
+            ("[profiles.x]\nmodel_provider = \"x\"\n", None),
+            ("model_provider = unquoted\n", None),
+        ];
+        for (config, expected) in cases {
+            assert_eq!(
+                top_level_model_provider(config).as_deref(),
+                *expected,
+                "{config:?}"
+            );
+        }
     }
 }

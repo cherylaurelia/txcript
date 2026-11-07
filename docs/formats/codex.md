@@ -132,12 +132,15 @@ Writing lineage back into a rollout is not implemented yet — `from_common` nev
 - **Shell export.** `Bash` becomes `exec_command` with `cmd` and optional `workdir`.
   The canonical timeout, description, and background fields have no matching fields in
   this mapping and are omitted. Other tools keep their canonical function-call form.
-- **Resume is picky.** `from_common` must emit `model_provider: "openai"` in `session_meta` —
+- **Resume is picky.** `from_common` must emit a `model_provider` (`"openai"`) in `session_meta` —
   current Codex resolves a null provider to the empty name and fails resume with
   ``Model provider `` not found``. `base_instructions` may be null (defaults substitute). Foreign
   tool names are normalized to OpenAI's `[A-Za-z0-9_-]+` requirement when written: unsupported
   characters become `_`, and an empty name becomes `tool`. This destination-only normalization is
   not reversible, and distinct foreign names can converge (for example, `a.b` and `a/b`).
+- **Provider must match.** Codex 0.166+ refuses a session recorded under another provider than
+  the one it runs with, so a copy written into the live store takes the top-level `model_provider`
+  from `config.toml`. `--out` exports keep `openai`; profiles and command-line overrides aren't read.
 - **Version drift.** Newer rollouts add fields (`ordinal`, `session_id`, `parent_thread_id`,
   structured `source`) and kinds (`world_state`, `compacted`, `inter_agent_communication`).
   Unknown envelope fields land in a flattened `extra` map and unknown kinds are carried

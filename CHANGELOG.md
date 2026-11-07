@@ -13,6 +13,7 @@ Each release is published to [crates.io](https://crates.io/crates/txcript),
 
 ### Fixed
 
+- Write the `model_provider` from Codex's `config.toml` into sessions written to the live Codex store, so Codex 0.166+ resumes them instead of refusing a session recorded under `openai`.
 - Resolve a session id that exists in several stores to the most recently modified copy. `view`, `export`, `continue` and `crop` used to load whichever copy the file system listed first; discovery now breaks start-time ties by file mtime.
 
 ### Added
